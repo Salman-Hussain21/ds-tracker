@@ -1,25 +1,37 @@
 const GameDig = require('gamedig');
 const axios = require('axios');
+const http = require('http');
 
 // CONFIG
 const SERVER_IP = '149.202.87.35';
 const SERVER_PORT = 27015;
-const API_URL = 'https://dstracker.mshstack.com/receive_data.php';
+const API_URL = process.env.API_URL || 'https://dstracker.mshstack.com/receive_data.php';
 const API_KEY = 'dsgamingtrackermshstack';
 const INTERVAL = 60 * 1000; // 60s
 
-console.log("Starting Render Poller (Plan B) -> " + API_URL);
+// Create persistent axios instance for speed
+const apiClient = axios.create({
+    timeout: 15000,
+    headers: {
+        'User-Agent': 'DSGC-Tracker-Poller/2.0',
+        'Content-Type': 'application/json',
+        'Connection': 'keep-alive'
+    }
+});
+
+console.log(`[${new Date().toISOString()}] Initializing Production Poller...`);
+console.log(`[Target API]: ${API_URL}`);
 
 async function poll() {
+    const startTime = Date.now();
     try {
-        // 1. Query Game Server (Render does this)
-        // 1. Query Game Server (Render does this)
+        // 1. Query Game Server
         const state = await GameDig.query({
             type: 'cs16',
             host: SERVER_IP,
             port: SERVER_PORT,
-            maxAttempts: 3,     // Try 3 times before failing
-            socketTimeout: 5000 // Wait 5 seconds per try
+            maxAttempts: 3,
+            socketTimeout: 3000
         });
 
         // 2. Prepare Data
@@ -36,36 +48,44 @@ async function poll() {
         };
 
         // 3. Send to Namecheap
-        const axiosConfig = {
-            timeout: 10000,
-            headers: { 'User-Agent': 'DSGC-Tracker-Poller/1.0' }
-        };
-        const res = await axios.post(API_URL, payload, axiosConfig);
-        console.log(`[${new Date().toLocaleTimeString()}] Sent ${state.players.length} players. Response: ${res.data}`);
+        const res = await apiClient.post(API_URL, payload);
+        const duration = Date.now() - startTime;
+        console.log(`[${new Date().toLocaleTimeString()}] Poll Success: ${state.players.length} players | API Latency: ${duration}ms | Response: ${res.data}`);
 
     } catch (e) {
-        console.error(`[${new Date().toLocaleTimeString()}] Poll Error: ${e.message}`);
+        const errorType = e.response ? `API Error (${e.response.status})` : `Network/Gamedig Error (${e.code || e.message})`;
+        console.error(`[${new Date().toLocaleTimeString()}] Poll Failure: ${errorType}`);
 
-        // If it's a 404, warn about the URL
         if (e.response && e.response.status === 404) {
-            console.error("CRITICAL: API URL returned 404. Check if receive_data.php exists at: " + API_URL);
+            console.error("CRITICAL: API endpoint not found. Verify receive_data.php at: " + API_URL);
         }
 
-        // If GameDig failed or network failed, tell Namecheap server is down
+        // Report error to API if possible
         try {
-            await axios.post(API_URL, { key: API_KEY, error: 'down' }, {
-                timeout: 5000,
-                headers: { 'User-Agent': 'DSGC-Tracker-Poller/1.0' }
-            });
-        } catch (err) {
-            console.error("Failed to report DOWN status to API.");
+            await apiClient.post(API_URL, { key: API_KEY, error: 'down' });
+        } catch (reportError) {
+            // Silently ignore reporting errors to prevent loops
         }
     }
 }
 
+// Start Polling
 setInterval(poll, INTERVAL);
-poll(); // Run once immediately
+poll();
 
-// Health Check
-const http = require('http');
-http.createServer((req, res) => { res.end('Poller Active'); }).listen(process.env.PORT || 8080);
+// Anti-Crash & Health Check
+process.on('uncaughtException', (err) => {
+    console.error(`[FATAL] Uncaught Exception: ${err.message}`);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Health Check Server (Keep Render Alive)
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Poller is Active and Healthy');
+}).listen(process.env.PORT || 8080, () => {
+    console.log(`[Health Check] Server listening on port ${process.env.PORT || 8080}`);
+});
