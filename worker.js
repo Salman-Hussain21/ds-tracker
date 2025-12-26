@@ -5,7 +5,7 @@ const http = require('http');
 // CONFIG
 const SERVER_IP = '149.202.87.35';
 const SERVER_PORT = 27015;
-const API_URL = process.env.API_URL || 'https://dsgc.live/receive_data.php';
+const API_URL = process.env.API_URL || 'https://dstracker.mshstack.com/receive_data.php';
 const API_KEY = 'dsgamingtrackermshstack';
 const INTERVAL = 6 * 1000; // 6 seconds
 
