@@ -1,35 +1,15 @@
-require('dotenv').config();
 const GameDig = require('gamedig');
 const axios = require('axios');
-const express = require('express');
-const cors = require('cors');
-const AFKTracker = require('./afk_tracker');
+const http = require('http');
 
 // CONFIG
-const SERVER_IP = process.env.SERVER_IP || '149.202.87.35';
-const SERVER_PORT = parseInt(process.env.SERVER_PORT) || 27015;
-const API_URL = process.env.API_URL || 'https://dsgc.live/receive_data.php';
-const API_KEY = process.env.API_KEY || 'dsgamingtrackermshstack';
-const POLL_INTERVAL = 6 * 1000; // 6 seconds
-const DB_FLUSH_INTERVAL = 60 * 1000; // 60 seconds
+const SERVER_IP = '149.202.87.35';
+const SERVER_PORT = 27015;
+const API_URL = process.env.API_URL || 'https://dstracker.mshstack.com/receive_data.php';
+const API_KEY = 'dsgamingtrackermshstack';
+const INTERVAL = 6 * 1000; // 6 seconds
 
-// Initialize Express
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const PORT = process.env.PORT || 3000;
-
-// Initialize AFK Tracker
-const dbConfig = {
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME
-};
-const tracker = new AFKTracker(dbConfig);
-
-// Create persistent axios instance for Legacy PHP Sync
+// Create persistent axios instance for speed
 const apiClient = axios.create({
     timeout: 15000,
     headers: {
@@ -39,66 +19,22 @@ const apiClient = axios.create({
     }
 });
 
-console.log(`[${new Date().toISOString()}] Initializing Service & Poller...`);
-console.log(`[Target Game Server]: ${SERVER_IP}:${SERVER_PORT}`);
-
-// --- API Endpoints ---
-app.get('/', (req, res) => {
-    res.send('DSGC Poller & AFK Service is Running');
-});
-
-// Endpoint: Real-time Player Status (Active/AFK)
-app.get('/api/players/status', (req, res) => {
-    try {
-        const status = tracker.getLiveStatus();
-        res.json({
-            timestamp: new Date().toISOString(),
-            server: `${SERVER_IP}:${SERVER_PORT}`,
-            count: status.length,
-            players: status
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// --- Poller Logic ---
-let lastFlushTime = Date.now();
+console.log(`[${new Date().toISOString()}] Initializing Production Poller...`);
+console.log(`[Target API]: ${API_URL}`);
 
 async function poll() {
     const startTime = Date.now();
-    let step = 'INIT';
     try {
         // 1. Query Game Server
-        step = 'GAMEDIG';
-        // Log config once if needed, or on error
         const state = await GameDig.query({
             type: 'cs16',
             host: SERVER_IP,
             port: SERVER_PORT,
-            maxAttempts: 2,
-            socketTimeout: 3000,
-            debug: false
+            maxAttempts: 3,
+            socketTimeout: 3000
         });
 
-        // 2. Process AFK Logic
-        step = 'AFK_LOGIC';
-        tracker.processPoll(state.players);
-
-        // 3. Flush to DB if interval passed
-        if (Date.now() - lastFlushTime > DB_FLUSH_INTERVAL) {
-            step = 'DB_FLUSH';
-            try {
-                await tracker.flushToDB();
-                lastFlushTime = Date.now();
-            } catch (dbErr) {
-                console.error(`[DB Flush Error] ${dbErr.message}`);
-                // Don't stop polling if DB fails (unless critical?)
-            }
-        }
-
-        // 4. Send to Legacy PHP API (Keep existing functionality)
-        step = 'PHP_SYNC';
+        // 2. Prepare Data
         const payload = {
             key: API_KEY,
             name: state.name,
@@ -111,41 +47,45 @@ async function poll() {
             max_players: state.maxplayers
         };
 
-        // We don't await this to avoid blocking the loop, but handle catch
-        apiClient.post(API_URL, payload)
-            .then(res => {
-                // Optional: console.log(`[PHP Sync] Success`);
-            })
-            .catch(e => {
-                console.error(`[PHP Sync] Failed: ${e.message}`);
-            });
-
+        // 3. Send to Namecheap
+        const res = await apiClient.post(API_URL, payload);
         const duration = Date.now() - startTime;
-        // console.log(`[Poll] Success: ${state.players.length} players | ${duration}ms`);
+        console.log(`[${new Date().toLocaleTimeString()}] Poll Success: ${state.players.length} players | API Latency: ${duration}ms | Response: ${res.data}`);
 
     } catch (e) {
-        // This catch block mainly catches GameDig errors now (since DB and PHP are handled/isolated or async)
-        const errorDetail = e.code || e.message;
-        console.error(`[Poll Failure @ ${step}] Error: ${errorDetail}`);
-        if (step === 'GAMEDIG') {
-            console.error(`[Debug] Target: ${SERVER_IP}:${SERVER_PORT}`);
+        const errorType = e.response ? `API Error (${e.response.status})` : `Network/Gamedig Error (${e.code || e.message})`;
+        console.error(`[${new Date().toLocaleTimeString()}] Poll Failure: ${errorType}`);
+
+        if (e.response && e.response.status === 404) {
+            console.error("CRITICAL: API endpoint not found. Verify receive_data.php at: " + API_URL);
+        }
+
+        // Report error to API if possible
+        try {
+            await apiClient.post(API_URL, { key: API_KEY, error: 'down' });
+        } catch (reportError) {
+            // Silently ignore reporting errors to prevent loops
         }
     }
 }
 
-// Start Server
-app.listen(PORT, () => {
-    console.log(`[API] Server listening on port ${PORT}`);
+// Start Polling
+setInterval(poll, INTERVAL);
+poll();
 
-    // Start Polling Loop
-    setInterval(poll, POLL_INTERVAL);
-    poll(); // Initial run
-});
-
-// Error Handling
+// Anti-Crash & Health Check
 process.on('uncaughtException', (err) => {
     console.error(`[FATAL] Uncaught Exception: ${err.message}`);
 });
+
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('[FATAL] Unhandled Rejection:', reason);
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Health Check Server (Keep Render Alive)
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Poller is Active and Healthy');
+}).listen(process.env.PORT || 8080, () => {
+    console.log(`[Health Check] Server listening on port ${process.env.PORT || 8080}`);
 });
