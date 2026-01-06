@@ -67,26 +67,38 @@ let lastFlushTime = Date.now();
 
 async function poll() {
     const startTime = Date.now();
+    let step = 'INIT';
     try {
         // 1. Query Game Server
+        step = 'GAMEDIG';
+        // Log config once if needed, or on error
         const state = await GameDig.query({
             type: 'cs16',
             host: SERVER_IP,
             port: SERVER_PORT,
             maxAttempts: 2,
-            socketTimeout: 3000
+            socketTimeout: 3000,
+            debug: false
         });
 
         // 2. Process AFK Logic
+        step = 'AFK_LOGIC';
         tracker.processPoll(state.players);
 
         // 3. Flush to DB if interval passed
         if (Date.now() - lastFlushTime > DB_FLUSH_INTERVAL) {
-            await tracker.flushToDB();
-            lastFlushTime = Date.now();
+            step = 'DB_FLUSH';
+            try {
+                await tracker.flushToDB();
+                lastFlushTime = Date.now();
+            } catch (dbErr) {
+                console.error(`[DB Flush Error] ${dbErr.message}`);
+                // Don't stop polling if DB fails (unless critical?)
+            }
         }
 
         // 4. Send to Legacy PHP API (Keep existing functionality)
+        step = 'PHP_SYNC';
         const payload = {
             key: API_KEY,
             name: state.name,
@@ -112,8 +124,12 @@ async function poll() {
         // console.log(`[Poll] Success: ${state.players.length} players | ${duration}ms`);
 
     } catch (e) {
-        const errorType = e.response ? `API Error (${e.response.status})` : `Network/Gamedig Error (${e.code || e.message})`;
-        console.error(`[Poll] Failure: ${errorType}`);
+        // This catch block mainly catches GameDig errors now (since DB and PHP are handled/isolated or async)
+        const errorDetail = e.code || e.message;
+        console.error(`[Poll Failure @ ${step}] Error: ${errorDetail}`);
+        if (step === 'GAMEDIG') {
+            console.error(`[Debug] Target: ${SERVER_IP}:${SERVER_PORT}`);
+        }
     }
 }
 
