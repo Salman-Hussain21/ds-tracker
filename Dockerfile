@@ -10,7 +10,7 @@ COPY package*.json ./
 RUN npm install --production
 
 # Copy application files
-COPY worker.js ./
+COPY . .
 
 # Expose port (Back4App will set this via env)
 EXPOSE 8080
