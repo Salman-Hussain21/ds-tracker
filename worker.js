@@ -1,10 +1,15 @@
+require('dotenv').config();
 const GameDig = require('gamedig');
 const axios = require('axios');
 const http = require('http');
 
 // CONFIG
-const SERVER_IP = '149.202.87.35';
-const SERVER_PORT = 27015;
+const SERVERS = [
+    { ip: '149.202.87.35', port: 27015, name: 'Public' },
+    { ip: '149.202.87.35', port: 27016, name: 'AFK' },
+    { ip: '149.202.87.35', port: 27018, name: 'Deathmatch' }
+];
+
 const API_URL = process.env.API_URL || 'https://dsgc.live/receive_data.php';
 const API_KEY = 'dsgamingtrackermshstack';
 const INTERVAL = 6 * 1000; // 6 seconds
@@ -13,30 +18,31 @@ const INTERVAL = 6 * 1000; // 6 seconds
 const apiClient = axios.create({
     timeout: 15000,
     headers: {
-        'User-Agent': 'DSGC-Tracker-Poller/2.0',
+        'User-Agent': 'DSGC-Tracker-Poller/3.0',
         'Content-Type': 'application/json',
         'Connection': 'keep-alive'
     }
 });
 
-console.log(`[${new Date().toISOString()}] Initializing Production Poller...`);
+console.log(`[${new Date().toISOString()}] Initializing Multi-Server Poller...`);
 console.log(`[Target API]: ${API_URL}`);
+console.log(`[Targets]: ${SERVERS.length} servers configured.`);
 
-async function poll() {
-    const startTime = Date.now();
+async function pollServer(server) {
     try {
         // 1. Query Game Server
         const state = await GameDig.query({
             type: 'cs16',
-            host: SERVER_IP,
-            port: SERVER_PORT,
-            maxAttempts: 3,
+            host: server.ip,
+            port: server.port,
+            maxAttempts: 2,
             socketTimeout: 3000
         });
 
         // 2. Prepare Data
         const payload = {
             key: API_KEY,
+            server_port: server.port, // Critical for backend to distinguish
             name: state.name,
             map: state.map,
             players: state.players.map(p => ({
@@ -47,26 +53,26 @@ async function poll() {
             max_players: state.maxplayers
         };
 
-        // 3. Send to Namecheap
-        const res = await apiClient.post(API_URL, payload);
-        const duration = Date.now() - startTime;
-        console.log(`[${new Date().toLocaleTimeString()}] Poll Success: ${state.players.length} players | API Latency: ${duration}ms | Response: ${res.data}`);
+        // 3. Send to Backend
+        await apiClient.post(API_URL, payload);
+        // console.log(`[${server.name}] OK: ${state.players.length} players`);
 
     } catch (e) {
-        const errorType = e.response ? `API Error (${e.response.status})` : `Network/Gamedig Error (${e.code || e.message})`;
-        console.error(`[${new Date().toLocaleTimeString()}] Poll Failure: ${errorType}`);
+        console.error(`[${new Date().toLocaleTimeString()}] [${server.name} Error]: ${e.message}`);
 
-        if (e.response && e.response.status === 404) {
-            console.error("CRITICAL: API endpoint not found. Verify receive_data.php at: " + API_URL);
-        }
-
-        // Report error to API if possible
+        // Report error to API if possible (server down)
         try {
-            await apiClient.post(API_URL, { key: API_KEY, error: 'down' });
-        } catch (reportError) {
-            // Silently ignore reporting errors to prevent loops
-        }
+            await apiClient.post(API_URL, {
+                key: API_KEY,
+                server_port: server.port,
+                error: 'down'
+            });
+        } catch (reportError) { }
     }
+}
+
+async function poll() {
+    await Promise.all(SERVERS.map(s => pollServer(s)));
 }
 
 // Start Polling
