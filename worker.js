@@ -7,7 +7,7 @@ const http = require('http');
 const SERVERS = [
     { ip: '149.202.87.35', port: 27015, name: 'Public' },
     { ip: '149.202.87.35', port: 27016, name: 'AFK' },
-    { ip: '149.202.87.35', port: 27018, name: 'Deathmatch' }
+    // { ip: '149.202.87.35', port: 27018, name: 'Deathmatch' }
 ];
 
 const API_URL = process.env.API_URL || 'https://dsgc.live/receive_data.php';
