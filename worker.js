@@ -6,10 +6,10 @@ const cors = require('cors');
 const AFKTracker = require('./afk_tracker');
 
 // CONFIG
-const SERVER_IP = process.env.SERVER_IP;
-const SERVER_PORT = parseInt(process.env.SERVER_PORT);
-const API_URL = process.env.API_URL;
-const API_KEY = process.env.API_KEY;
+const SERVER_IP = process.env.SERVER_IP || '149.202.87.35';
+const SERVER_PORT = parseInt(process.env.SERVER_PORT) || 27015;
+const API_URL = process.env.API_URL || 'http://dsgc.live/dsgc-live/receive_data.php';
+const API_KEY = process.env.API_KEY || 'dsgamingtrackermshstack';
 const POLL_INTERVAL = 6 * 1000; // 6 seconds
 const DB_FLUSH_INTERVAL = 60 * 1000; // 60 seconds
 
@@ -18,7 +18,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
 
 // Initialize AFK Tracker
 const dbConfig = {
