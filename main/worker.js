@@ -1,94 +1,71 @@
-require('dotenv').config();
-const GameDig = require('gamedig');
-const axios = require('axios');
-const express = require('express');
-const cors = require('cors');
-const AFKTracker = require('./afk_tracker');
+// Robust Diagnostic Imports to report exact missing modules in production logs
+const missingDeps = [];
+let dotenv, GameDig, axios, http, https;
+
+try { dotenv = require('dotenv'); } catch (e) { missingDeps.push('dotenv (' + e.message + ')'); }
+try { GameDig = require('gamedig'); } catch (e) { missingDeps.push('gamedig (' + e.message + ')'); }
+try { axios = require('axios'); } catch (e) { missingDeps.push('axios (' + e.message + ')'); }
+try { http = require('http'); } catch (e) { missingDeps.push('http (' + e.message + ')'); }
+try { https = require('https'); } catch (e) { missingDeps.push('https (' + e.message + ')'); }
+
+if (missingDeps.length > 0) {
+    console.error('\n======================================================');
+    console.error('[FATAL STARTUP ERROR] Missing or corrupt dependencies:');
+    missingDeps.forEach(dep => console.error(`  - ${dep}`));
+    console.error('Please run "npm install" in the api directory or check your build step!');
+    console.error('======================================================\n');
+    process.exit(1);
+}
+
+// Initialize dotenv
+dotenv.config();
+
+// Keep-Alive Agents to optimize performance and prevent socket leaks
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
 
 // CONFIG
-const SERVER_IP = process.env.SERVER_IP || '149.202.87.35';
-const SERVER_PORT = parseInt(process.env.SERVER_PORT) || 27015;
-const API_URL = process.env.API_URL || 'http://dsgc.live/dsgc-live/receive_data.php';
-const API_KEY = process.env.API_KEY || 'dsgamingtrackermshstack';
-const POLL_INTERVAL = 6 * 1000; // 6 seconds
-const DB_FLUSH_INTERVAL = 60 * 1000; // 60 seconds
+const SERVERS = [
+    { ip: '149.202.87.35', port: 27015, name: 'Public' },
+    { ip: '149.202.87.35', port: 27016, name: 'AFK' },
+    { ip: '149.202.87.35', port: 27018, name: 'Deathmatch' }
+];
 
-// Initialize Express
-const app = express();
-app.use(cors());
-app.use(express.json());
+const API_URL = process.env.API_URL || 'https://dsgc.live/receive_data.php';
+const API_KEY = 'dsgamingtrackermshstack';
+const INTERVAL = 6 * 1000; // 6 seconds
 
-const PORT = process.env.PORT || 3000;
-
-// Initialize AFK Tracker
-const dbConfig = {
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME
-};
-const tracker = new AFKTracker(dbConfig);
-
-// Create persistent axios instance for Legacy PHP Sync
+// Create persistent axios instance for speed
 const apiClient = axios.create({
-    timeout: 15000,
+    timeout: 8000, // Fail fast under heavy network latency to avoid stacking
+    httpAgent,
+    httpsAgent,
     headers: {
-        'User-Agent': 'DSGC-Tracker-Poller/2.0',
+        'User-Agent': 'DSGC-Tracker-Poller/3.0',
         'Content-Type': 'application/json',
         'Connection': 'keep-alive'
     }
 });
 
-console.log(`[${new Date().toISOString()}] Initializing Service & Poller...`);
-console.log(`[Target Game Server]: ${SERVER_IP}:${SERVER_PORT}`);
+console.log(`[${new Date().toISOString()}] Initializing Multi-Server Poller...`);
+console.log(`[Target API]: ${API_URL}`);
+console.log(`[Targets]: ${SERVERS.length} servers configured.`);
 
-// --- API Endpoints ---
-app.get('/', (req, res) => {
-    res.send('DSGC Poller & AFK Service is Running');
-});
-
-// Endpoint: Real-time Player Status (Active/AFK)
-app.get('/api/players/status', (req, res) => {
+async function pollServer(server) {
     try {
-        const status = tracker.getLiveStatus();
-        res.json({
-            timestamp: new Date().toISOString(),
-            server: `${SERVER_IP}:${SERVER_PORT}`,
-            count: status.length,
-            players: status
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// --- Poller Logic ---
-let lastFlushTime = Date.now();
-
-async function poll() {
-    const startTime = Date.now();
-    try {
-        // 1. Query Game Server
+        // 1. Query Game Server (Fast query settings)
         const state = await GameDig.query({
             type: 'cs16',
-            host: SERVER_IP,
-            port: SERVER_PORT,
-            maxAttempts: 2,
-            socketTimeout: 3000
+            host: server.ip,
+            port: server.port,
+            maxAttempts: 1,
+            socketTimeout: 2000
         });
 
-        // 2. Process AFK Logic
-        tracker.processPoll(state.players);
-
-        // 3. Flush to DB if interval passed
-        if (Date.now() - lastFlushTime > DB_FLUSH_INTERVAL) {
-            await tracker.flushToDB();
-            lastFlushTime = Date.now();
-        }
-
-        // 4. Send to Legacy PHP API (Keep existing functionality)
+        // 2. Prepare Data
         const payload = {
             key: API_KEY,
+            server_port: server.port, // Critical for backend to distinguish
             name: state.name,
             map: state.map,
             players: state.players.map(p => ({
@@ -99,37 +76,54 @@ async function poll() {
             max_players: state.maxplayers
         };
 
-        // We don't await this to avoid blocking the loop, but handle catch
-        apiClient.post(API_URL, payload)
-            .then(res => {
-                // Optional: console.log(`[PHP Sync] Success`);
-            })
-            .catch(e => {
-                console.error(`[PHP Sync] Failed: ${e.message}`);
-            });
-
-        const duration = Date.now() - startTime;
-        // console.log(`[Poll] Success: ${state.players.length} players | ${duration}ms`);
+        // 3. Send to Backend
+        await apiClient.post(API_URL, payload);
 
     } catch (e) {
-        const errorType = e.response ? `API Error (${e.response.status})` : `Network/Gamedig Error (${e.code || e.message})`;
-        console.error(`[Poll] Failure: ${errorType}`);
+        console.error(`[${new Date().toLocaleTimeString()}] [${server.name} Error]: ${e.message}`);
+
+        // Report error to API if possible (server down)
+        try {
+            await apiClient.post(API_URL, {
+                key: API_KEY,
+                server_port: server.port,
+                error: 'down'
+            });
+        } catch (reportError) { }
     }
 }
 
-// Start Server
-app.listen(PORT, () => {
-    console.log(`[API] Server listening on port ${PORT}`);
+async function poll() {
+    const startTime = Date.now();
+    try {
+        await Promise.all(SERVERS.map(s => pollServer(s)));
+    } catch (err) {
+        console.error(`[Poll Error]: ${err.message}`);
+    } finally {
+        const elapsed = Date.now() - startTime;
+        const delay = Math.max(100, INTERVAL - elapsed);
+        setTimeout(poll, delay);
+    }
+}
 
-    // Start Polling Loop
-    setInterval(poll, POLL_INTERVAL);
-    poll(); // Initial run
-});
+// Start Polling (Recursive setTimeout avoids overlapping loops)
+poll();
 
-// Error Handling
+// Anti-Crash & Health Check
 process.on('uncaughtException', (err) => {
     console.error(`[FATAL] Uncaught Exception: ${err.message}`);
 });
+
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('[FATAL] Unhandled Rejection:', reason);
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+// Health Check Server (Keep Render Alive)
+const PORT = parseInt(process.env.PORT) || 8080;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Poller is Active and Healthy');
+}).listen(PORT, '0.0.0.0', () => {
+    console.log(`[Health Check] Server listening on port ${PORT}`);
+});
+
