@@ -121,6 +121,22 @@ async function poll() {
 app.listen(PORT, () => {
     console.log(`[API] Server listening on port ${PORT}`);
 
+        // Auto-ping to prevent Render sleep on free tier
+    const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL;
+    if (RENDER_EXTERNAL_URL) {
+        console.log(`[Keep-Alive] Setup to ping ${RENDER_EXTERNAL_URL} every 14 minutes.`);
+        setInterval(async () => {
+            try {
+                console.log(`[Keep-Alive] Pinging self to prevent sleep...`);
+                await axios.get(RENDER_EXTERNAL_URL);
+            } catch (err) {
+                console.error(`[Keep-Alive] Error pinging self: ${err.message}`);
+            }
+        }, 14 * 60 * 1000); // 14 minutes
+    } else {
+        console.log('[Keep-Alive] RENDER_EXTERNAL_URL not found. If on Render free tier, self-ping won\'t work unless set.');
+    }
+    
     // Start Polling Loop
     setInterval(poll, POLL_INTERVAL);
     poll(); // Initial run
