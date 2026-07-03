@@ -33,7 +33,7 @@ const tracker = new AFKTracker(dbConfig);
 const apiClient = axios.create({
     timeout: 15000,
     headers: {
-        'User-Agent': 'DSGC-Tracker-Poller/2.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Type': 'application/json',
         'Connection': 'keep-alive'
     }
