@@ -41,7 +41,7 @@ const apiClient = axios.create({
     httpAgent,
     httpsAgent,
     headers: {
-        'User-Agent': 'DSGC-Tracker-Poller/3.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Type': 'application/json',
         'Connection': 'keep-alive'
     }
@@ -80,7 +80,9 @@ async function pollServer(server) {
         await apiClient.post(API_URL, payload);
 
     } catch (e) {
-        console.error(`[${new Date().toLocaleTimeString()}] [${server.name} Error]: ${e.message}`);
+        const errorData = e.response && e.response.data ? e.response.data : e.message;
+        const errorDataStr = typeof errorData === 'string' ? errorData.substring(0, 100) : JSON.stringify(errorData);
+        console.error(`[${new Date().toLocaleTimeString()}] [${server.name} Error]: ${e.message} - ${errorDataStr}`);
 
         // Report error to API if possible (server down)
         try {
@@ -125,5 +127,21 @@ http.createServer((req, res) => {
     res.end('Poller is Active and Healthy');
 }).listen(PORT, '0.0.0.0', () => {
     console.log(`[Health Check] Server listening on port ${PORT}`);
+    
+    // Auto-ping to prevent Render sleep on free tier
+    const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL;
+    if (RENDER_EXTERNAL_URL) {
+        console.log(`[Keep-Alive] Setup to ping ${RENDER_EXTERNAL_URL} every 14 minutes.`);
+        setInterval(async () => {
+            try {
+                console.log(`[Keep-Alive] Pinging self to prevent sleep...`);
+                await axios.get(RENDER_EXTERNAL_URL);
+            } catch (err) {
+                console.error(`[Keep-Alive] Error pinging self: ${err.message}`);
+            }
+        }, 14 * 60 * 1000); // 14 minutes
+    } else {
+        console.log('[Keep-Alive] RENDER_EXTERNAL_URL not found. If on Render free tier, self-ping won\'t work unless set.');
+    }
 });
 
